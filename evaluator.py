@@ -33,10 +33,6 @@ class Evaluator:
         return f1_time, prec_time, recall_time
 
     def evaluate(self, data, model, args, cuda=True):
-        """
-        target_label: when args.eval_separate_all, {TIMEX, EVENT_VERB, EVENT_NOUN, EVENT_ADJ, EVENT_PREP, EVENT_OTHER}
-                      when args.eval_separate_VN, {TIMEX, EVENT_V, EVENT_N}
-        """
         model.eval()
 
         y_trues = []
