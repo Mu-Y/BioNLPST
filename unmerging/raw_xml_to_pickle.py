@@ -15,7 +15,7 @@ import re
 import pdb
 import pickle
 import tqdm
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import argparse
 from multitask_LSTM import BiLSTM
 import pprint
@@ -509,10 +509,10 @@ def heu_for_unmerge(arg_combs, d):
             # do nothing for SIMPLE types, because they all have only one Theme
             # final_combs.extend(cur_combs)
         elif trigger_label in BIND:
-            pass
-            # max_chain_len = max([len(i) for i in cur_combs])
-            # # only keep longest chain like (Theme, Theme) if any
-            # cur_combs = [i for i in cur_combs if len(i) == max_chain_len]
+            # pass
+            max_chain_len = max([len(i) for i in cur_combs])
+            # only keep longest chain like (Theme, Theme) if any
+            cur_combs = [i for i in cur_combs if len(i) == max_chain_len]
         elif trigger_label in REG:
             max_chain_len = max([len(i) for i in cur_combs])
             # only keep longest chain like (Theme, Cause) if any
@@ -529,9 +529,13 @@ def heu_for_unmerge(arg_combs, d):
 #     assert len(set(flags)) == 1, pdb.set_trace()
 #     return all(flags)
 
-def is_terminal(dic):
-    targets = dic.values()
+def is_terminal(event):
+    targets = []
+    for k, v in event.items():
+        if k.startswith('Theme') or k == 'Cause':
+            targets.append(v)
     return all([i.startswith('T') for i in targets])
+
 
 # def pretty_print(d, indent=0):
 #     for key, value in d.items():
@@ -567,12 +571,30 @@ def map_theme_for_bind(cur_comb):
         out_comb.append(tuple(out_edge))
     return out_comb
 
-class Event():
-    def __init__(self, event_id=None, cur_comb=None, trigger_span = None, trigger_type=None):
-        self.event_id = event_id
-        self.trigger_span = trigger_span
-        self.trigger_type=trigger_type
-    def set_args(self, cur_comb):
+# class Event():
+#     def __init__(self, event_id=None, cur_comb=None, trigger_span = None, trigger_type=None):
+#         self.event_id = event_id
+#         self.trigger_span = trigger_span
+#         self.trigger_type=trigger_type
+#     def set_args(self, cur_comb):
+
+def writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events):
+    triggerIdBySpan = OrderedDict(sorted(triggerIdBySpan.items(), key=lambda x:int(x[0].split('-')[0])))
+    all_events = sorted(all_events, key=lambda x: int(x['ST_id'][1:]))
+    with open('{}/{}.a2'.format(args.out_dir, orig_docid), 'w') as f:
+        # first write triggers
+        for span, trigger_id in triggerIdBySpan.items():
+            span_l = span.split('-')[0]
+            span_r = span.split('-')[1]
+            T_line = '{}\t{} {} {}\t{}\n'.format(trigger_id, triggerTypeBySpan[span], span_l, span_r, tokenBySpan[span])
+            f.write(T_line)
+
+        # then write events
+        for event in all_events:
+            arg_str = ' '.join([':'.join([k, v]) for (k, v) in event.items() if k.startswith('Theme') or k == 'Cause'])
+            E_line = '{}\t{}:{} '.format(event['ST_id'], event['trigger_type'], triggerIdBySpan[event['trigger_span']]) + \
+                     arg_str + '\n'
+            f.write(E_line)
 
 
 if __name__ == '__main__':
@@ -603,16 +625,16 @@ if __name__ == '__main__':
     #     pickle.dump(data, f)
     # with open('GE09_dev_protIdBySpan.pkl', 'wb') as f:
     #     pickle.dump(protIdBySpan, f)
-    with open('GE09_train_flat_w-span.pkl', 'r') as f:
-        data_dev = pickle.load(f)
-    with open('GE09_train_protIdBySpan.pkl', 'r') as f:
-        protIdBySpan_dev = pickle.load(f)
+    with open('GE09_dev_flat_w-span.pkl', 'r') as f:
+        data = pickle.load(f)
+    with open('GE09_dev_protIdBySpan.pkl', 'r') as f:
+        protIdBySpan = pickle.load(f)
 
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
 
-    for i in range(len(data_dev)):
-        arg_combs = unmerging(data_dev[i])
+    for i in range(len(data)):
+        arg_combs = unmerging(data[i])
         # pdb.set_trace()
         if len(arg_combs) != 0:
             # TODO: this is an error !!!!!!!!!
@@ -623,25 +645,25 @@ if __name__ == '__main__':
             # these are actuallly the unmerged events
             # final_combs = [a for a in arg_combs if len(a) == max_chain_len]
             if args.apply_heu:
-                final_combs = heu_for_unmerge(arg_combs, data_dev[i])
+                final_combs = heu_for_unmerge(arg_combs, data[i])
             else:
                 final_combs = arg_combs
             # pdb.set_trace()
-            data_dev[i] += tuple([final_combs], )
+            data[i] += tuple([final_combs], )
         else:
-            data_dev[i] += tuple([[]], )
-        # print data_dev[i][0]
-        # if data_dev[i][0] == 'GE09.d167.s1':
+            data[i] += tuple([[]], )
+        # print data[i][0]
+        # if data[i][0] == 'GE09.d167.s1':
         #     pdb.set_trace()
-        # if data_dev[i][0] == 'GE09.d167.s2':
+        # if data[i][0] == 'GE09.d167.s2':
         #     pdb.set_trace()
     # pdb.set_trace()
-    for doc_id in protIdBySpan_dev.keys():
-        doc_sents = [i for i in data_dev if i[0].startswith(doc_id)]
+    for doc_id in protIdBySpan.keys(): # doc_id: GE09.d1
+        doc_sents = [i for i in data if '.'.join(i[0].split('.')[:-1]) == doc_id]
         # sort the doc with sentence order
         doc_sents = sorted(doc_sents, key=lambda x: int(x[0].split('.')[-1][1:]))
 
-        doc_prots = protIdBySpan_dev[doc_id]
+        doc_prots = protIdBySpan[doc_id]
         if doc_prots.values() == []:
             # doc does not have Proteins
             continue
@@ -651,91 +673,172 @@ if __name__ == '__main__':
         trigger_id = 1 + max([int(i.split('.')[1][1:]) for i in doc_prots.values()])
         # event_id = 1
         triggerIdBySpan = {}
+        triggerTypeBySpan = {}
+        tokenBySpan = {}
         eventIdsBySpan = defaultdict(list)
-        eventSTById = defaultdict(dict)
+        # eventSTById = defaultdict(dict)
 
-        eventsBySpan = defaultdict(list)
-        with open('{}/{}.a2.t1'.format(args.out_dir, orig_docid), 'w') as f:
-            for d in doc_sents:
-                trigger_types = d[3]
-                spans = d[6]
-                tokens = d[1]
-                int_idxs = d[4]
-                int_labels = d[5]
-                arg_combs = d[7]
-                assert len(trigger_types) == len(spans)
-                assert len(spans) == len(tokens)
+        # eventsBySpan = defaultdict(list)
+        events = []
+        event_id = 1
+        print orig_docid
+        for d in doc_sents:
+            trigger_types = d[3]
+            spans = d[6]
+            tokens = d[1]
+            int_idxs = d[4]
+            int_labels = d[5]
+            arg_combs = d[7]
+            assert len(trigger_types) == len(spans)
+            assert len(spans) == len(tokens)
 
-                # first write the triggers
-                for idx in range(len(trigger_types)):
-                    if trigger_types[idx] in ['Protein', 'Entity', 'None']:
-                        # skip triggers that are not events
-                        # these include None, Protein, Entity
-                        continue
-                    span_l = spans[idx].split('-')[0]
-                    span_r = spans[idx].split('-')[1]
-                    T_line = 'T{}\t{} {} {}\t{}\n'.format(trigger_id, trigger_types[idx], span_l, span_r, tokens[idx])
-                    # f.write(T_line)
-                    assert spans[idx] not in triggerIdBySpan
-                    triggerIdBySpan[spans[idx]] = 'T{}'.format(trigger_id)
-                    trigger_id += 1
+            # first write the triggers
+            for idx in range(len(trigger_types)):
+                if trigger_types[idx] in ['Protein', 'Entity', 'None']:
+                    # skip triggers that are not events
+                    # these include None, Protein, Entity
+                    continue
+                assert spans[idx] not in triggerIdBySpan
+                triggerIdBySpan[spans[idx]] = 'T{}'.format(trigger_id)
+                triggerTypeBySpan[spans[idx]] = trigger_types[idx]
+                tokenBySpan[spans[idx]] = tokens[idx]
+                trigger_id += 1
 
 
-                SIM
-
-                for idx in range(len(trigger_types)):
-                    cur_combs = [i for i in arg_combs if i[0][0][0] == idx]
-                    # if spans[idx] == '':
+            for idx in range(len(trigger_types)):
+                cur_combs = [i for i in arg_combs if i[0][0][0] == idx]
+                # if spans[idx] == '':
+                #     pdb.set_trace()
+                for cur_comb in cur_combs:
+                    event = {}
+                    if trigger_types[idx] == 'Binding':
+                        # map theme back to theme2 ... for Binding event
+                        cur_comb = map_theme_for_bind(cur_comb)
+                    event['trigger_span'] = spans[idx]
+                    event['trigger_type'] = trigger_types[idx]
+                    for edge in cur_comb:
+                        assert edge[0][0] == idx
+                        target_idx = edge[0][1]
+                        target_span = spans[target_idx]
+                        arg_role = edge[1]
+                        if target_span in triggerIdBySpan:
+                            event[arg_role] = target_span
+                        else:
+                            event[arg_role] = doc_prots[target_span].split('.')[-1]
+                    # if d[0] == 'GE09.d235.s11':
                     #     pdb.set_trace()
-                    for cur_comb in cur_combs:
-                        event = {}
-                        if trigger_types[idx] == 'Binding':
-                            # map theme back to theme2 ... for Binding event
-                            cur_comb = map_theme_for_bind(cur_comb)
-                        for edge in cur_comb:
-                            assert edge[0][0] == idx
-                            target_idx = edge[0][1]
-                            target_span = spans[target_idx]
-                            arg_role = edge[1]
-                            if target_span in triggerIdBySpan:
-                                event[arg_role] = target_span
-                            else:
-                                event[arg_role] = doc_prots[target_span].split('.')[-1]
-                        # if d[0] == 'GE09.d235.s11':
-                        #     pdb.set_trace()
-                        event['ST_id'] = 'E{}'.format(event_id)
-
-                        eventsBySpan[spans[idx]].append(event)
-            terminal_events = {}
-            event_id = 1
-            for span, l in eventsBySpan.items():
-                for dic in l:
-                    if is_terminal(dic):
-                        str_key = ' '.join([':'.join([k,v]) for (k,v) in dic.items()])
-                        terminal_events[str_key] = 'E{}'.format(event_id)
+                    if is_terminal(event):
+                        event['ST_id'] = 'E{}'.format(event_id)  # Assign event ids for terminal events
+                        eventIdsBySpan[spans[idx]].append(event['ST_id'])
                         event_id += 1
+                    else:
+                        event['ST_id'] = 'X'  # Nesting events, Id To be determined later
+                    events.append(event)
 
-            if orig_docid == '10080532':
-                print orig_docid
-                print(terminal_events)
-                print(eventsBySpan)
-                pickle.dump(eventsBySpan, open('initial_dict2.pkl', 'w'))
-                pickle.dump(doc_prots, open('doc_prots2.pkl', 'w'))
-                for k, v in eventsBySpan.items():
-                    for i in range(len(v)):
-                        # str_key = ' '.join([':'.join([kk,vv]) for (kk,vv) in v[i].items()])
-                        # v[i] = terminal_events.get(str_key, v[i])
-                        for kk, vv in v[i].items():
-                            if vv.startswith('T'):
-                                continue
-                            # using get() function is to hanle triggers that are corresponding to inter-sent events
-                            # for inter-sent events, their trigger spans are in triggerIdBySpan but NOT in eventsBySpan
-                            v[i][kk] = eventsBySpan.get(vv, triggerIdBySpan[vv])
-                print(eventsBySpan)
-                # pp = pprint.PrettyPrinter(indent=4)
-                # pp.pprint(eventsBySpan.items())
-                pickle.dump(eventsBySpan, open('test_dict2.pkl', 'w'))
-                pdb.set_trace()
+                    # eventsBySpan[spans[idx]].append(event)
+        # terminal_events = {}
+        # event_id = 1
+        # for span, l in eventsBySpan.items():
+        #     for dic in l:
+        #         if is_terminal(dic):
+        #             str_key = ' '.join([':'.join([k,v]) for (k,v) in dic.items()])
+        #             terminal_events[str_key] = 'E{}'.format(event_id)
+        #             event_id += 1
+
+        # print events
+        # pdb.set_trace()
+
+        event_cand_stack = [i for i in events if i['ST_id'] == 'X']
+        new_events = []
+        # print event_id
+        while event_cand_stack:
+            remove = [False] * len(event_cand_stack)
+            for idx in range(len(event_cand_stack)):
+                cur_event = event_cand_stack[idx]
+                assert cur_event['trigger_type'] in REG
+                theme_target_span = cur_event['Theme']
+                cause_target_span = cur_event.get('Cause', None)
+
+                # pdb.set_trace()
+                if cause_target_span:
+                    cause_target_ids = eventIdsBySpan.get(cause_target_span, None)
+                else:
+                    cause_target_ids = None
+                theme_target_ids = eventIdsBySpan.get(theme_target_span, None)
+                if theme_target_ids is not None and cause_target_ids is not None:
+                    # both theme and cause point to (known) child trigger
+                    new_combs = [(x, y) for x in theme_target_ids for y in cause_target_ids]
+                    for i in range(len(new_combs)):
+                        new_event = {}
+                        new_event['trigger_type'] = cur_event['trigger_type']
+                        new_event['trigger_span'] = cur_event['trigger_span']
+                        assert cause_target_span
+                        new_event['Cause'] = new_combs[i][1]
+                        new_event['Theme'] = new_combs[i][0]
+                        new_event['ST_id'] = 'E{}'.format(event_id)
+                        eventIdsBySpan[cur_event['trigger_span']].append(new_event['ST_id'])
+                        event_id += 1
+                        new_events.append(new_event)
+                        # the parent events have been found and added
+                        remove[idx] = True
+                elif theme_target_ids:
+                    # only theme point to a (known) child event trigger
+                    for i in range(len(theme_target_ids)):
+                        new_event = {}
+                        new_event['trigger_type'] = cur_event['trigger_type']
+                        new_event['trigger_span'] = cur_event['trigger_span']
+                        if cause_target_span:
+                            new_event['Cause'] = cur_event['Cause']
+                        new_event['Theme'] = theme_target_ids[i]
+                        new_event['ST_id'] = 'E{}'.format(event_id)
+                        eventIdsBySpan[cur_event['trigger_span']].append(new_event['ST_id'])
+                        event_id += 1
+                        new_events.append(new_event)
+                        # the parent events have been found and added
+                        remove[idx] = True
+                else:
+                    # target spans are unknown, meaning the child is not known yet
+                    continue
+            event_cand_stack = [event_cand_stack[i] for i in range(len(event_cand_stack)) if remove[i] == False]
+            if set(remove) == set([False]):
+                # found the root(s), no more update
+                break
+        all_events = [event for event in events+new_events if event['ST_id'] != 'X']
+        # if orig_docid == '10359895':
+        writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events)
+            # pdb.set_trace()
+                        # for k, v in cur_event.items():
+                        #     new_event = {}
+                        #     if k.startswith('Theme') or k == 'Cause':
+                        #         if cur_event[k] in eventIdsBySpan: # cur_event[k] is targt span
+                        #             # child of this event has previously been found
+
+                        #             target_event_ids = eventIdsBySpan[cur_event[k]]
+
+
+
+
+
+
+                # print(terminal_events)
+                # print(eventsBySpan)
+                # pickle.dump(eventsBySpan, open('initial_dict2.pkl', 'w'))
+                # pickle.dump(doc_prots, open('doc_prots2.pkl', 'w'))
+                # for k, v in eventsBySpan.items():
+                #     for i in range(len(v)):
+                #         # str_key = ' '.join([':'.join([kk,vv]) for (kk,vv) in v[i].items()])
+                #         # v[i] = terminal_events.get(str_key, v[i])
+                #         for kk, vv in v[i].items():
+                #             if vv.startswith('T'):
+                #                 continue
+                #             # using get() function is to hanle triggers that are corresponding to inter-sent events
+                #             # for inter-sent events, their trigger spans are in triggerIdBySpan but NOT in eventsBySpan
+                #             v[i][kk] = eventsBySpan.get(vv, triggerIdBySpan[vv])
+                # print(eventsBySpan)
+                # # pp = pprint.PrettyPrinter(indent=4)
+                # # pp.pprint(eventsBySpan.items())
+                # pickle.dump(eventsBySpan, open('test_dict2.pkl', 'w'))
+                # pdb.set_trace()
 
 
 def get_event_ST_string(out_combs, triggerIdBySpan, eventIdsBySpan, doc_prots, spans, trigger_id, event_id):
