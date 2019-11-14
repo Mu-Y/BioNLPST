@@ -19,6 +19,13 @@ from predictor import Predictor
 from evaluator import Evaluator
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
+
+trigger_types = ["Gene_expression", "Transcription", "Protein_catabolism", "Localization",
+                 "Phosphorylation", "Binding", "Regulation", "Positive_regulation", "Negative_regulation"]
+trigger_ignore_types = ['Protein', 'Entity']
+interaction_ignore_types = ['Site', 'ToLoc', 'AtLoc', 'SiteParent']
+
+
 def read_w2v_emb(word2idx, wv_file):
     word_emb = []
     wv_from_bin = KeyedVectors.load_word2vec_format(wv_file, binary=True)
@@ -65,8 +72,15 @@ def construct_pairs(scores_trigger, gold_pair_idxs, gold_int_labels, gold_trigge
     when gold_trigger_labels is fed in, then it is used to find the Protein entities
     when gold_trigger_labels is not fed in, then Protein is assumed to be unknown
     """
-    def is_gold(pair_idx):
-        return pair_idx in gold_pair_idxs
+    def is_gold(pair_idx, gold_pair_idxs, gold_int_labels):
+        if not pair_idx in gold_pair_idxs:
+            return False
+        if gold_int_labels[gold_pair_idxs.index(pair)] in interaction_ignore_types:
+            # this is to exclude the Site ... args
+            return False
+        return True
+        # return pair_idx in gold_pair_idxs
+
     res_pair_idxs = []
     res_int_labels = []
     entity_idxs = []
@@ -78,10 +92,11 @@ def construct_pairs(scores_trigger, gold_pair_idxs, gold_int_labels, gold_trigge
             # assume Protein  is given
             if gold_trigger_labels[i] in ['Protein']:
                 entity_idxs.append(i)
-        if args.idx2triggerlabel[y_preds[i]] == 'None':
+        if args.idx2triggerlabel[y_preds[i]] in ['None','Entity']:
+            # Entity is also ignored, i.e. not considered as event trigger or Protein target
             continue
-        elif args.idx2triggerlabel[y_preds[i]] == 'Entity':
-            entity_idxs.append(i)
+        # elif args.idx2triggerlabel[y_preds[i]] == 'Entity':
+        #     entity_idxs.append(i)
         else:
             # trigger
             trigger_idxs.append(i)
@@ -90,7 +105,7 @@ def construct_pairs(scores_trigger, gold_pair_idxs, gold_int_labels, gold_trigge
 
     for pair in te_pair_idxs + tt_pair_idxs:
         # for all TE + TT pairs
-        if not is_gold(pair):
+        if not is_gold(pair, gold_pair_idxs, gold_int_labels):
             res_int_labels.append('None')
         else:
             res_int_labels.append(gold_int_labels[gold_pair_idxs.index(pair)])
@@ -140,11 +155,18 @@ def train_epoch(data_train, model, optimizer, criterion, args):
             # in this case, just use the gold pairs and predict the edge
             pair_idxs = d[4]
             interaction_labels = d[5]
+            assert len(pair_idxs) == len(interaction_labels)
+            # only select Theme and Cause edges
+            # this is to exclude the Site ... args
+            pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
+            interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
 
         elif args.pred_edge_with_pred:
             # in this case, first construct the pairs with predicted triggers, pairs:(T, E), (T, T)
             # returned pair_idxs and ineteraction_labels can be empty
             pair_idxs, interaction_labels = construct_pairs(scores_trigger=scores_trigger, gold_pair_idxs=d[4], gold_int_labels=d[5], gold_trigger_labels=d[3], args=args)
+        assert len(pair_idxs) == len(interaction_labels)
+        assert set(interaction_labels).intersection(set(interaction_ignore_types)) == set([]), pdb.set_trace()#print(interaction_labels)
 
         interaction_labels = [args.interactionlabel2idx[i] for i in interaction_labels]
         interaction_labels = Variable(torch.LongTensor(np.array(interaction_labels).transpose()))
@@ -170,7 +192,15 @@ def predict(data, model, args):
     y_trues_int = []
     y_preds_int = []
 
+    # save the predicted data structure for final event evaluation
+    # the difference of data_out and gold data is in d[3], d[4], d[5], which contain
+    # predicted trigger_types(No Protein No Entity), pair_idxs, int_labels(Only Theme and Cause)
+    data_out = []
     for d in tqdm.tqdm(data):
+
+        d_out = []
+        d_out.extend([d[0], d[1], d[2]])
+
         tokens = d[1]
         pos_tags = d[2]
         trigger_labels = d[3]
@@ -196,18 +226,28 @@ def predict(data, model, args):
         y_pred_trigger = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
         y_preds_trigger.extend(y_pred_trigger)
 
+        d_out.append([args.idx2triggerlabel[i] for i in y_pred_trigger])
 
         # second predict edges, there are two cases
         if args.pred_edge_with_gold:
             # in this case, just use the gold pairs and predict the edge
             pair_idxs = d[4]
             interaction_labels = d[5]
+            assert len(pair_idxs) == len(interaction_labels)
+            # only select Theme and Cause edges
+            # this is to exclude the Site ... args
+            pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
+            interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
 
         elif args.pred_edge_with_pred:
             # in this case, first construct the pairs with predicted triggers, pairs:(T, E), (T, T)
             # returned pair_idxs and ineteraction_labels can be empty
             pair_idxs, interaction_labels = construct_pairs(scores_trigger=scores_trigger, gold_pair_idxs=d[4], gold_int_labels=d[5], gold_trigger_labels=d[3], args=args)
 
+        assert len(pair_idxs) == len(interaction_labels)
+        assert set(interaction_labels).intersection(set(interaction_ignore_types)) == set([]), pdb.set_trace()#print(interaction_labels)
+
+        d_out.append(pair_idxs) # d[4]
 
         interaction_labels = [args.interactionlabel2idx[i] for i in interaction_labels]
         y_trues_int.extend(interaction_labels)
@@ -221,68 +261,19 @@ def predict(data, model, args):
             # Only compute loss for those sentences which have interactions
             scores_interaction = model(tokens, pos_tags, pair_idxs, task='interaction')
             y_pred_int = scores_interaction.max(dim=1, keepdim=False)[1].tolist()
+            int_pred = [args.idx2intlabel[y_pred_int[i]] for i in range(len(y_pred_int))]
+            d_out.append(int_pred)  # d[5]
             y_preds_int.extend(y_pred_int)
+        else:
+            d_out.append([])
 
-    return y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int
-# def predict_noisy(data, model, args):
-#     assert args.pred_edge_with_gold == False
-#     assert args.pred_edge_with_pred == True
-#     model.eval()
-#     y_trues_trigger = []
-#     y_preds_trigger = []
-#     y_trues_int = []
-#     y_preds_int = []
-#
-#
-#
-#     for d in tqdm.tqdm(data):
-#
-#
-#         tokens = d[1]
-#         pos_tags = d[2]
-#         trigger_labels = d[3]
-#         assert len(tokens) == len(trigger_labels)
-#
-#         tokens = [args.word2idx[i] for i in tokens]
-#         pos_tags = [args.pos2idx[i] for i in pos_tags]
-#         trigger_labels = [args.triggerlabel2idx[i] for i in trigger_labels]
-#
-#         y_trues_trigger.extend(trigger_labels)
-#
-#         tokens = Variable(torch.LongTensor(np.array([tokens]).transpose()))
-#         pos_tags = Variable(torch.LongTensor(np.array([pos_tags]).transpose()))
-#         trigger_labels = Variable(torch.LongTensor(np.array(trigger_labels).transpose()))     # labels have to be one-dim for NLL loss
-#
-#
-#         if args.cuda:
-#             tokens, pos_tags, trigger_labels = [tokens.cuda(), pos_tags.cuda(), trigger_labels.cuda()]
-#
-#         # first predict for triggers
-#         scores_trigger = model(tokens, pos_tags, pair_idxs=None, task='trigger')
-#         y_pred_trigger = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
-#         y_preds_trigger.extend(y_pred_trigger)
-#
-#
-#         # second predict edges, there are two cases
-#         if args.pred_edge_with_gold:
-#             # in this case, just use the gold pairs and predict the edge
-#             pair_idxs = d[4]
-#             interaction_labels = d[5]
-#
-#         elif args.pred_edge_with_pred:
-#             # in this case, first construct the pairs with predicted triggers, pairs:(T, E), (T, T)
-#             # returned pair_idxs and ineteraction_labels can be empty
-#             pair_idxs, interaction_labels = construct_pairs(scores_trigger=scores_trigger, gold_pair_idxs=d[4], gold_int_labels=d[5], gold_trigger_labels=d[3], args=args)
-#
-#         interaction_labels = [args.interactionlabel2idx[i] for i in interaction_labels]
-#         interaction_labels = Variable(torch.LongTensor(np.array(interaction_labels).transpose()))
-#         if args.cuda:
-#             interaction_labels = interaction_labels.cuda()
-#
-#         loss_interaction = 0
-#         if len(pair_idxs) > 0:
-#             # Only compute loss for those sentences which have interactions
-#             scores_interaction = model(tokens, pos_tags, pair_idxs, task='interaction')
+        d_out.append(d[6])  # d[6]
+
+
+        data_out.append(d_out)
+
+    return y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out
+
 
 def evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval):
     if not str2bool(final_eval):
@@ -311,22 +302,24 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--hid_dim', type=int, default=60)
     p.add_argument('--n_layers', type=int, default=1)
-    p.add_argument('--n_epoch', type=int, default=20)
+    p.add_argument('--n_epoch', type=int, default=30)
     p.add_argument('--dropout', type=float, default=0.1)
     p.add_argument('--batch', type=int, default=1)
     p.add_argument('--trainable_emb', type=str2bool, default=False)
     p.add_argument('--cuda', type=str2bool, default=True)
-    p.add_argument('--lr', type=float, default=0.0005)
+    p.add_argument('--lr', type=float, default=0.0001)
     p.add_argument('--opt', choices=['sgd', 'adam'], default='adam')
     p.add_argument('--random_seed', type=int, default=27)
     p.add_argument('--save_model_dir', type=str, default='./joint_models')
     p.add_argument('--patience', type=int, default=1)
     p.add_argument('--exclude_trigger', type=str2bool, default=True)
+    p.add_argument('--exclude_interaction', type=str2bool, default=True)
     p.add_argument('--trigger_w', type=float, default=1.0)
     p.add_argument('--interaction_w', type=float, default=1.0)
     p.add_argument('--pred_edge_with_gold', type=str2bool, default=True, help='When predicting interactions, using gold pair idx')
     p.add_argument('--pred_edge_with_pred', type=str2bool, default=True, help='When predicting interactions, using predicted pair idx, after some warmup epochs')
-    p.add_argument('--n_warmup_epoch', type=int, default=20, help='warmup epochs for predicting interactions with gold pair idx')
+    p.add_argument('--n_warmup_epoch', type=int, default=10, help='warmup epochs for predicting interactions with gold pair idx')
+    p.add_argument('--out_pkl', type=str, default='GE11_dev-pred')
     args = p.parse_args()
 
 
@@ -338,10 +331,10 @@ if __name__ == '__main__':
     if not os.path.exists(args.save_model_dir):
         os.makedirs(args.save_model_dir)
 
-    data_train = pickle.load(open('./unmerging/GE09_train_flat.pkl', 'rb'))
-    data_dev = pickle.load(open('./unmerging/GE09_dev_flat.pkl', 'rb'))
+    data_train = pickle.load(open('./unmerging/GE11_train_flat_w-span.pkl', 'rb'))
+    data_dev = pickle.load(open('./unmerging/GE11_dev_flat_w-span.pkl', 'rb'))
 
-    # all_data: corpus_ids, corpus_tokens, corpus_pos_tags, corpus_trigger_labels, corpus_interaction_idxs, corpus_interaction_labels
+    # all_data: corpus_ids, corpus_tokens, corpus_pos_tags, corpus_trigger_labels, corpus_interaction_idxs, corpus_interaction_labels, corpus_spans
     all_data = data_train + data_dev
 
     all_tokens = np.concatenate([d[1] for d in all_data])
@@ -350,9 +343,9 @@ if __name__ == '__main__':
     word2idx = OrderedDict(zip(word_list, range(len(word_list))))
     args.word2idx = word2idx
     print "Loading w2v embeddings..."
-    # w2v_emb = read_w2v_emb(word2idx, 'wikipedia-pubmed-and-PMC-w2v.bin')
-    # np.save(open('w2v_emb.npy', 'wb'), w2v_emb)
-    w2v_emb = np.load('w2v_emb.npy')
+    w2v_emb = read_w2v_emb(word2idx, 'wikipedia-pubmed-and-PMC-w2v.bin')
+    np.save(open('w2v_emb_GE11.npy', 'wb'), w2v_emb)
+    w2v_emb = np.load('w2v_emb_GE11.npy')
 
     all_pos = np.concatenate([d[2] for d in all_data])
     all_pos = list(set(all_pos))
@@ -365,17 +358,13 @@ if __name__ == '__main__':
     np.save(open('pos_emb.npy', 'wb'), pos_emb)
     pos_emb = np.load('pos_emb.npy')
 
-    trigger_types = ["Gene_expression", "Transcription", "Protain_catabolism", "Localization",
-                     "Phosphorylation", "Binding", "Regulation", "Positive_regulation", "Negative_regulation"]
-    trigger_ignore_types = ['Protein']
-    interaction_ignore_types = ['Site', 'ToLoc', 'AtLoc', 'SiteParent']
-
 
     all_trigger_labels = np.concatenate([d[3] for d in all_data])
     all_trigger_labels = list(set(all_trigger_labels))
     if args.exclude_trigger:
         for i in trigger_ignore_types:
             all_trigger_labels.remove(i)
+        assert set(all_trigger_labels) == set(trigger_types + ['None']), pdb.set_trace()
     triggerlabel2idx = OrderedDict(zip(all_trigger_labels, range(len(all_trigger_labels))))
     if args.exclude_trigger:
         for i in trigger_ignore_types:
@@ -390,10 +379,18 @@ if __name__ == '__main__':
     # now the interaction labels exclude 'None', later when using predicted triggers,
     # 'None' should be included.
     all_interaction_labels = np.concatenate([d[5] for d in all_data])
-    all_interaction_labels = list(set(all_interaction_labels))
+    all_interaction_labels = list(set(all_interaction_labels))   # there is NO None in all_interaction_labels
     if args.pred_edge_with_pred:
         all_interaction_labels += ['None']
+    if args.exclude_interaction:
+        for i in interaction_ignore_types:
+            all_interaction_labels.remove(i)
     interactionlabel2idx = OrderedDict(zip(all_interaction_labels, range(len(all_interaction_labels))))
+    # NOTE: the 'Site', 'SiteParent' will not be used as training samples anyway
+    # if args.exclude_interaction:
+    #     for i in interaction_ignore_types:
+    #         # Map the 'Site', 'SiteParent'... to None
+    #         interactionlabel2idx[i] = interactionlabel2idx['None']
     args.interactionlabel2idx = interactionlabel2idx
 
 
@@ -438,11 +435,14 @@ if __name__ == '__main__':
     best_epoch = 0
     for epoch in range(1, args.n_epoch+1):
         print('*'*10 + 'epoch {}'.format(epoch) + '*'*10)
-        if epoch > args.n_warmup_epoch:
-            args.pred_edge_with_gold = False
-            args.pred_edge_with_pred = True
+        if args.pred_edge_with_pred:
+            if epoch > args.n_warmup_epoch:
+                args.pred_edge_with_gold = False
+                args.pred_edge_with_pred = True
+        else:
+            assert args.pred_edge_with_gold == True
         train_epoch(data_train, model, optimizer, criterion, args)
-        y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int = predict(data_dev, model, args)
+        y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args)
 
         # f1_trigger, f1_int = evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval=False)
         # print "trigger f1 {}".format(f1_trigger)
@@ -468,6 +468,19 @@ if __name__ == '__main__':
                                                                              recall_int[idx],
                                                                              f1_int[idx],
                                                                              support_int[idx])
+
+        torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                   }, '{}/joint_model_pred-w-pred.pth'.format(args.save_model_dir))
+        print 'model saved as ' + '{}/joint_model_pred-w-pred.pth'.format(args.save_model_dir)
+
+    with open('{}.pkl'.format(args.out_pkl), 'wb') as f:
+        pickle.dump(data_out, f)
+
+
+
         # for i in range(len(prec_int)):
 
         # elif args.pred_edge_with_pred:

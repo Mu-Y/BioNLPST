@@ -425,9 +425,6 @@ def unmerging(d):
 
     arg_combs = []
     for idx in range(len(tokens)):
-        # For predicted case, if the predicted trigger is None, then skip
-        if trigger_labels[idx] == 'None':
-            continue
         # find outgoing edges for current tokens
         # out_ints: each element is like ((l_idx, r_idx), int_label)
         out_ints = [i for i in zip(int_idxs, int_labels) if i[0][0] == idx]
@@ -435,7 +432,6 @@ def unmerging(d):
             continue
         # else, meaning current tokens have outgoing edges
         trigger_label = trigger_labels[idx]
-        assert trigger_label != 'None'
         arg_combs.extend(get_valid_combination(trigger_label, out_ints))
         # pdb.set_trace()
     return arg_combs
@@ -503,7 +499,7 @@ def heu_for_unmerge(arg_combs, d):
     for idx in range(len(trigger_types)):
         trigger_label = trigger_types[idx]
         cur_combs = [i for i in arg_combs if i[0][0][0] == idx]
-        if trigger_label in ['None', 'Protein', 'Entity']:
+        if trigger_label in ['None', 'Protein', 'None', 'Entity']:
             continue
         # inter-sent interactions, meaning a trigger no outgoing edges, skip
         if len(cur_combs) == 0:
@@ -600,24 +596,15 @@ def writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, a
                      arg_str + '\n'
             f.write(E_line)
 
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--parse', type=str, default='McCC')
     p.add_argument('--tokenization', type=str, default=None)
-    p.add_argument('--corpus_file', type=str, default='../reparse_from_installed_GE11/GE11-test.xml')
-    p.add_argument('--merge', type=str2bool, default=True)
-    p.add_argument('--apply_heu', type=str2bool, default=True, help='apply the heuristics of taking the longest chain for unmerging')
-    p.add_argument('--out_dir', type=str, default='GE09_a2_out_dev-pred-w-pred-new')
+    p.add_argument('--corpus_file', type=str, default='../reparse_from_installed_GE09/GE09-devel.xml')
+    p.add_argument('--merge', action='store_true')
+    p.add_argument('--apply_heu', action='store_true', help='apply the heuristics of taking the longest chain for unmerging')
+    p.add_argument('--out_dir', type=str, default='a2_out_dev')
     args = p.parse_args()
 
     # structureAnalyzer = StructureAnalyzer()
@@ -625,29 +612,22 @@ if __name__ == '__main__':
     # print >> sys.stderr, "--- Structure Analysis ----"
     # print >> sys.stderr, structureAnalyzer.toString()
 
-    print "Loading unmerged gold corpus..."
-    corpus = loadCorpus(args.corpus_file, args.parse, tokenization=args.tokenization,
-                        removeNameInfo=False, removeIntersentenceInteractionsFromCorpusElements=True,
-                        merge=False)
-    pdb.set_trace()
+    # print "Loading unmerged gold corpus..."
+    # corpus = loadCorpus(args.corpus_file, args.parse, tokenization=args.tokenization,
+    #                     removeNameInfo=False, removeIntersentenceInteractionsFromCorpusElements=True,
+    #                     merge=False)
     # # sentenceGraph will be merged at the internal call of buildExampleFromGraph function
     # # within the flattenCorpus function
     # data, protIdBySpan= flattenCorpus(corpus)
 
     # pdb.set_trace()
-    # with open('GE11_train_flat_w-span.pkl', 'wb') as f:
+    # with open('GE09_dev_flat_w-span.pkl', 'wb') as f:
     #     pickle.dump(data, f)
-    # with open('GE11_train_protIdBySpan.pkl', 'wb') as f:
+    # with open('GE09_dev_protIdBySpan.pkl', 'wb') as f:
     #     pickle.dump(protIdBySpan, f)
-
-    # pdb.set_trace()
-
-    # with open('GE11_train_flat_w-span.pkl', 'r') as f:
-    with open('GE09_dev-pred-w-pred-new.pkl', 'r') as f:
+    with open('GE09_dev_flat_w-span.pkl', 'r') as f:
         data = pickle.load(f)
     with open('GE09_dev_protIdBySpan.pkl', 'r') as f:
-        # NOTE: the protIdBySpan is already processed by TEES
-        # this is not the gold annotation from a1 files
         protIdBySpan = pickle.load(f)
 
     if not os.path.exists(args.out_dir):
@@ -712,6 +692,7 @@ if __name__ == '__main__':
             assert len(trigger_types) == len(spans)
             assert len(spans) == len(tokens)
 
+            # first write the triggers
             for idx in range(len(trigger_types)):
                 if trigger_types[idx] in ['Protein', 'Entity', 'None']:
                     # skip triggers that are not events
@@ -723,7 +704,6 @@ if __name__ == '__main__':
                 tokenBySpan[spans[idx]] = tokens[idx]
                 trigger_id += 1
 
-            # pdb.set_trace()
 
             for idx in range(len(trigger_types)):
                 cur_combs = [i for i in arg_combs if i[0][0][0] == idx]
@@ -742,17 +722,9 @@ if __name__ == '__main__':
                         target_span = spans[target_idx]
                         arg_role = edge[1]
                         if target_span in triggerIdBySpan:
-                            # it is a nesting parent, its target is presented by span for now
                             event[arg_role] = target_span
-                        elif target_span in doc_prots:
-                            # it points to Protein, replace with the protein ID
-                            event[arg_role] = doc_prots[target_span].split('.')[-1]
                         else:
-                            # wrong prediction, in gold the target_span should be a event trigger but the predicted target_span position
-                            # is None(not picked up by model, then this target_span will not be present in triggerIdBySpan, also not in doc_prots
-                            continue
-                            # pass
-
+                            event[arg_role] = doc_prots[target_span].split('.')[-1]
                     # if d[0] == 'GE09.d235.s11':
                     #     pdb.set_trace()
                     if is_terminal(event):
@@ -761,17 +733,19 @@ if __name__ == '__main__':
                         event_id += 1
                     else:
                         event['ST_id'] = 'X'  # Nesting events, Id To be determined later
-                    # Think about this!!!!!!!!!!!
-                    # if 'Theme' not in event and 'Cause' in event:
-                    #     pdb.set_trace()
-                    # NOTE: need to think about this !!!!!!!!!!!!!!!!!!!
-                    # is it valid to have this artificial screening?
-                    # predicted event might not have a theme edge, see above
-                    # pdb.set_trace()
-                    if not 'Theme' in event:
-                        continue
                     events.append(event)
 
+                    # eventsBySpan[spans[idx]].append(event)
+        # terminal_events = {}
+        # event_id = 1
+        # for span, l in eventsBySpan.items():
+        #     for dic in l:
+        #         if is_terminal(dic):
+        #             str_key = ' '.join([':'.join([k,v]) for (k,v) in dic.items()])
+        #             terminal_events[str_key] = 'E{}'.format(event_id)
+        #             event_id += 1
+
+        # print events
         # pdb.set_trace()
 
         event_cand_stack = [i for i in events if i['ST_id'] == 'X']
@@ -779,17 +753,10 @@ if __name__ == '__main__':
         # print event_id
         while event_cand_stack:
             remove = [False] * len(event_cand_stack)
-            # pre_len = len(remove)  #record state of remove mask
             for idx in range(len(event_cand_stack)):
                 cur_event = event_cand_stack[idx]
-                # NOTE: Need to think about it!!!!!!!!!!!
-                # mis-classified event trigger type, the predicted events might say a Gene_expression will also nests other events
-                # so this assertion is commented for now
-                # assert cur_event['trigger_type'] in REG
-                try:
-                    theme_target_span = cur_event['Theme']
-                except:
-                    pdb.set_trace()
+                assert cur_event['trigger_type'] in REG
+                theme_target_span = cur_event['Theme']
                 cause_target_span = cur_event.get('Cause', None)
 
                 # pdb.set_trace()
@@ -833,14 +800,92 @@ if __name__ == '__main__':
                     # target spans are unknown, meaning the child is not known yet
                     continue
             event_cand_stack = [event_cand_stack[i] for i in range(len(event_cand_stack)) if remove[i] == False]
-            if set(remove) == set([False]): #and len(remove) == prev_len:
+            if set(remove) == set([False]):
                 # found the root(s), no more update
                 break
         all_events = [event for event in events+new_events if event['ST_id'] != 'X']
         # if orig_docid == '10359895':
         writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events)
+            # pdb.set_trace()
+                        # for k, v in cur_event.items():
+                        #     new_event = {}
+                        #     if k.startswith('Theme') or k == 'Cause':
+                        #         if cur_event[k] in eventIdsBySpan: # cur_event[k] is targt span
+                        #             # child of this event has previously been found
+
+                        #             target_event_ids = eventIdsBySpan[cur_event[k]]
 
 
+
+
+
+
+                # print(terminal_events)
+                # print(eventsBySpan)
+                # pickle.dump(eventsBySpan, open('initial_dict2.pkl', 'w'))
+                # pickle.dump(doc_prots, open('doc_prots2.pkl', 'w'))
+                # for k, v in eventsBySpan.items():
+                #     for i in range(len(v)):
+                #         # str_key = ' '.join([':'.join([kk,vv]) for (kk,vv) in v[i].items()])
+                #         # v[i] = terminal_events.get(str_key, v[i])
+                #         for kk, vv in v[i].items():
+                #             if vv.startswith('T'):
+                #                 continue
+                #             # using get() function is to hanle triggers that are corresponding to inter-sent events
+                #             # for inter-sent events, their trigger spans are in triggerIdBySpan but NOT in eventsBySpan
+                #             v[i][kk] = eventsBySpan.get(vv, triggerIdBySpan[vv])
+                # print(eventsBySpan)
+                # # pp = pprint.PrettyPrinter(indent=4)
+                # # pp.pprint(eventsBySpan.items())
+                # pickle.dump(eventsBySpan, open('test_dict2.pkl', 'w'))
+                # pdb.set_trace()
+
+
+def get_event_ST_string(out_combs, triggerIdBySpan, eventIdsBySpan, doc_prots, spans, trigger_id, event_id):
+    '''
+    given a list of out_combs like [(((11, 15), 'Theme'),), (((11, 14), 'Theme'),)]
+    return a list of event string in BioNLP ST format like ['Theme:T3', 'Theme:T4']
+    '''
+
+    cur_event_id = event_id
+    eventSTById = defaultdict(dict)
+    ST_events = []
+
+
+    # for source_span in eventIdsBySpan:
+
+    for i, event in enumerate(out_combs):
+        for edge in event:
+            arg_role = edge[1]
+            source_idx = edge[0][0]
+            source_span = spans[source_idx]
+            target_idx = edge[0][1]
+            target_span = spans[target_idx]
+            if target_span in triggerIdBySpan:
+                # target is a trigger, this is a nested event
+                eventIdsBySpan[target_span].append('E{}'.format(cur_event_id))
+                cur_event_id += 1
+            else:
+                assert target_span in doc_prots
+                eventSTById['E{}'.format(cur_event_id)][arg_role] = doc_prots[target_span]
+
+    event_ST = {}
+    cur_event_id = event_id
+    for event in out_combs:
+        for edge in event:
+            arg_role = edge[1]
+            target_idx = edge[0][1]
+            target_span = spans[target_idx]
+            if target_span in triggerIdBySpan:
+                # target is a trigger, this is a nested event
+                pass
+            else:
+                assert target_span in doc_prots[target_span]
+                event_ST[arg_role] = doc_prots[target_span]
+        event_ST_string = ''
+        # sorted, reverse=True to garuantee output in Theme, Cause order
+        for arg_role in sorted(event_ST, reverse=True):
+            event_ST_string = ' '.join([event_ST_string, '{}:{}'.format(arg_role, event_ST[arg_role])])
 
 
 
