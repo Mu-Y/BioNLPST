@@ -49,9 +49,13 @@ class BiLSTM(nn.Module):
         # if self.multitask:
 
         # MLP layer for trigger classificatoin
-        self.linear_layer_trigger = nn.Linear(hid_dim*2, triggerset_dim)
+        self.linear_layer1_trigger = nn.Linear(hid_dim*2, int(self.hid_dim/2))
+        self.linear_layer2_trigger = nn.Linear(int(self.hid_dim/2), triggerset_dim)
         # MLP layer for interaction classificaiton
-        self.linear_layer_interaction = nn.Linear(hid_dim*4, interactionset_dim)
+        self.linear_layer1_interaction = nn.Linear(hid_dim*4, self.hid_dim)
+        self.linear_layer2_interaction = nn.Linear(self.hid_dim, interactionset_dim)
+        # self.act = F.relu
+        self.act = nn.Tanh()
 
     def create_emb_layer(self, weights_matrix, trainable=False):
         num_embeddings, embedding_dim = weights_matrix.size()
@@ -70,8 +74,10 @@ class BiLSTM(nn.Module):
             init_word_embedding: random initialize word embedding or not
         """
         utils.init_lstm(self.word_lstm)
-        utils.init_linear(self.linear_layer_trigger)
-        utils.init_linear(self.linear_layer_interaction)
+        utils.init_linear(self.linear_layer1_trigger)
+        utils.init_linear(self.linear_layer2_trigger)
+        utils.init_linear(self.linear_layer1_interaction)
+        utils.init_linear(self.linear_layer2_interaction)
         # self.crf.rand_init()
     def forward(self, tokens, pos_tags, pair_idxs, task):
         '''
@@ -85,42 +91,45 @@ class BiLSTM(nn.Module):
 
         #word
         word_emb = self.word_emb(tokens)
-        d_word_emb = self.dropout(word_emb)
+        # d_word_emb = self.dropout(word_emb)
 
         #pos
         pos_emb = self.pos_emb(pos_tags)
 
         #word level lstm
-        lstm_out, _ = self.word_lstm(torch.cat((d_word_emb, pos_emb), dim=2))
-        d_lstm_out = self.dropout(lstm_out) # (word_seq_len, batch_size, hid_size)
+        lstm_out, _ = self.word_lstm(torch.cat((word_emb, pos_emb), dim=2))
 
         # if self.MLP:
         if task == 'trigger':
-            out = self.linear_layer_trigger(F.relu(d_lstm_out.view(len(tokens), -1)))
+            d_lstm_out = self.dropout(lstm_out) # (word_seq_len, batch_size, hid_size)
+            out = self.linear_layer1_trigger(d_lstm_out.view(len(tokens), -1))
+            out = self.act(out)
+            out = self.linear_layer2_trigger(out)
+            # out = self.dropout(out)
             scores = F.log_softmax(out, dim=1)
             # pdb.set_trace()
         if task == 'interaction':
             # TODO: finish the interaction constructer, then finish this
             # assert len(l_idx) == len(r_idx)
             # unsqueeze is to retain the batch_size dim, o.w. this dim will be lost by splicing
-            ltar_f = torch.cat([d_lstm_out[l, :, :self.hid_dim].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
-            ltar_b = torch.cat([d_lstm_out[l, :, self.hid_dim:].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
-            rtar_f = torch.cat([d_lstm_out[r, :, :self.hid_dim].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
-            rtar_b = torch.cat([d_lstm_out[r, :, self.hid_dim:].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
+            ltar_f = torch.cat([lstm_out[l, :, :self.hid_dim].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
+            ltar_b = torch.cat([lstm_out[l, :, self.hid_dim:].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
+            rtar_f = torch.cat([lstm_out[r, :, :self.hid_dim].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
+            rtar_b = torch.cat([lstm_out[r, :, self.hid_dim:].unsqueeze(1) for (l, r) in pair_idxs], dim=0)
 
             # pdb.set_trace()
 
             out = torch.cat((ltar_f, ltar_b, rtar_f, rtar_b), dim=2)
-            out = self.dropout(out)
-
-
 
             # ltar_f = torch.cat([d_lstm_out[b, lidx_start[b][r], :self.hid_size].unsqueeze(0) for b,r in rel_idxs], dim=0)
             # ltar_b = torch.cat([d_lstm_out[b, lidx_end[b][r], self.hid_size:].unsqueeze(0) for b,r in rel_idxs], dim=0)
             # rtar_f = torch.cat([d_lstm_out[b, ridx_start[b][r], :self.hid_size].unsqueeze(0) for b,r in rel_idxs], dim=0)
             # rtar_b = torch.cat([d_lstm_out[b, ridx_end[b][r], self.hid_size:].unsqueeze(0) for b,r in rel_idxs], dim=0)
             assert out.shape[0] == len(pair_idxs)
-            out = self.linear_layer_interaction(F.relu(out.view(len(pair_idxs), -1)))
+            out = self.linear_layer1_interaction(out.view(len(pair_idxs), -1))
+            out = self.act(out)
+            out = self.dropout(out)
+            out = self.linear_layer2_interaction(out)
             # pdb.set_trace()
             scores = F.log_softmax(out, dim=1)
             # pdb.set_trace()

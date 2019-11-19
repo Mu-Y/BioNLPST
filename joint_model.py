@@ -25,6 +25,9 @@ trigger_types = ["Gene_expression", "Transcription", "Protein_catabolism", "Loca
 trigger_ignore_types = ['Protein', 'Entity']
 interaction_ignore_types = ['Site', 'ToLoc', 'AtLoc', 'SiteParent']
 
+SIMPLE = ['Gene_expression', 'Transcription', 'Protain_catabolism', 'Localization', 'Phosphorylation']
+REG = ['Negative_regulation', 'Positive_regulation', 'Regulation']
+BIND = ['Binding']
 
 def read_w2v_emb(word2idx, wv_file):
     word_emb = []
@@ -67,26 +70,32 @@ def remove_neg_data(data):
         #     continue
     print "Removed number: {}".format(n_rm)
     return data
-def construct_pairs(scores_trigger, gold_pair_idxs, gold_int_labels, gold_trigger_labels=None, args=None):
+def construct_pairs(y_preds, gold_pair_idxs, gold_int_labels, gold_trigger_labels=None, args=None, test=False):
     """
     when gold_trigger_labels is fed in, then it is used to find the Protein entities
     when gold_trigger_labels is not fed in, then Protein is assumed to be unknown
+    when test is False, will return the constructed pairs and its label (both can be empty though)
+    when test is True, will return the constructed pairs and an empty list
     """
     def is_gold(pair_idx, gold_pair_idxs, gold_int_labels):
         if not pair_idx in gold_pair_idxs:
             return False
-        if gold_int_labels[gold_pair_idxs.index(pair)] in interaction_ignore_types:
+        if gold_int_labels[gold_pair_idxs.index(pair_idx)] in interaction_ignore_types:
             # this is to exclude the Site ... args
             return False
         return True
         # return pair_idx in gold_pair_idxs
+    if test:
+        gold_int_labels = None
+    else:
+        assert gold_int_labels is not None
 
+    # y_preds = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
     res_pair_idxs = []
     res_int_labels = []
     entity_idxs = []
     trigger_idxs = []
 
-    y_preds = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
     for i in range(len(y_preds)):
         if gold_trigger_labels != None:
             # assume Protein  is given
@@ -101,16 +110,25 @@ def construct_pairs(scores_trigger, gold_pair_idxs, gold_int_labels, gold_trigge
             # trigger
             trigger_idxs.append(i)
     te_pair_idxs = [(i, j) for i in trigger_idxs for j in entity_idxs]
-    tt_pair_idxs = [(i, j) for i in trigger_idxs for j in trigger_idxs if i != j]
+    # NOTE: here we only construct TT pairs if the source trigger is a REG event - the definition of dataset
+    tt_pair_idxs = [(i, j) for i in trigger_idxs for j in trigger_idxs if i != j and args.idx2triggerlabel[y_preds[i]] in REG]
 
     for pair in te_pair_idxs + tt_pair_idxs:
-        # for all TE + TT pairs
-        if not is_gold(pair, gold_pair_idxs, gold_int_labels):
-            res_int_labels.append('None')
+        if not test:
+            # for all TE + TT pairs
+            if not is_gold(pair, gold_pair_idxs, gold_int_labels):
+                res_int_labels.append('None')
+            else:
+                res_int_labels.append(gold_int_labels[gold_pair_idxs.index(pair)])
+            # res_pair_idxs.append(pair)
         else:
-            res_int_labels.append(gold_int_labels[gold_pair_idxs.index(pair)])
+            # test case, the gold_int_labels do not exist
+            # just append the constructed pairs and leave the res_int_labels empty
+            # pass
+            assert gold_int_labels is None
         res_pair_idxs.append(pair)
-    assert len(res_pair_idxs) == len(res_int_labels)
+    if test is False:
+        assert len(res_pair_idxs) == len(res_int_labels)
     # pdb.set_trace()
 
     return res_pair_idxs, res_int_labels
@@ -158,13 +176,30 @@ def train_epoch(data_train, model, optimizer, criterion, args):
             assert len(pair_idxs) == len(interaction_labels)
             # only select Theme and Cause edges
             # this is to exclude the Site ... args
-            pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
-            interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
+            # pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
+            # interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
+
+            # we construct the pairs using gold trigger labels
+            # note that there can be None pairs
+            pair_idxs, interaction_labels = construct_pairs(y_preds=[args.triggerlabel2idx[i] for i in d[3]],
+                                                            gold_pair_idxs=d[4],
+                                                            gold_int_labels=d[5],
+                                                            gold_trigger_labels=d[3],
+                                                            args=args,
+                                                            test=False)
 
         elif args.pred_edge_with_pred:
             # in this case, first construct the pairs with predicted triggers, pairs:(T, E), (T, T)
             # returned pair_idxs and ineteraction_labels can be empty
-            pair_idxs, interaction_labels = construct_pairs(scores_trigger=scores_trigger, gold_pair_idxs=d[4], gold_int_labels=d[5], gold_trigger_labels=d[3], args=args)
+
+            y_preds = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
+            # we construct the pairs using predicted triggers
+            pair_idxs, interaction_labels = construct_pairs(y_preds=y_preds,
+                                                            gold_pair_idxs=d[4],
+                                                            gold_int_labels=d[5],
+                                                            gold_trigger_labels=d[3],
+                                                            args=args,
+                                                            test=False)
         assert len(pair_idxs) == len(interaction_labels)
         assert set(interaction_labels).intersection(set(interaction_ignore_types)) == set([]), pdb.set_trace()#print(interaction_labels)
 
@@ -185,7 +220,16 @@ def train_epoch(data_train, model, optimizer, criterion, args):
         epoch_loss += utils.to_scalar(loss)
     print('epoch loss:{}'.format(epoch_loss))
 
-def predict(data, model, args):
+def predict(data, model, args, test=False):
+    '''
+    When test is set to False, then the construct_pairs function will return the semi-gold int labels according to the real gold int labels
+    When test is set to True, then the construct_pairs function will return empty int labels
+    Note that the data_out always append the predicted int labels
+    When dev:
+        set test=False/True doesn't matter, pred_edge_with_gold, pred_edge_with_pred has to be (False, True)
+    When test:
+        set test=False/True doesn't matter, pred_edge_with_gold, pred_edge_with_pred has to be (False, True)
+    '''
     model.eval()
     y_trues_trigger = []
     y_preds_trigger = []
@@ -204,9 +248,11 @@ def predict(data, model, args):
         tokens = d[1]
         pos_tags = d[2]
         trigger_labels = d[3]
+        # if 'Protein' in trigger_labels:
+        #     pdb.set_trace()
         assert len(tokens) == len(trigger_labels)
-        tokens = [args.word2idx[i] for i in tokens]
-        pos_tags = [args.pos2idx[i] for i in pos_tags]
+        tokens = [args.word2idx.get(i, args.word2idx['UNK']) for i in tokens]
+        pos_tags = [args.pos2idx.get(i,args.word2idx['UNK']) for i in pos_tags]
         trigger_labels = [args.triggerlabel2idx[i] for i in trigger_labels]
 
         y_trues_trigger.extend(trigger_labels)
@@ -236,27 +282,45 @@ def predict(data, model, args):
             assert len(pair_idxs) == len(interaction_labels)
             # only select Theme and Cause edges
             # this is to exclude the Site ... args
-            pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
-            interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
+            # pair_idxs = [pair_idxs[i] for i in range(len(pair_idxs)) if interaction_labels[i] not in interaction_ignore_types]
+            # interaction_labels = [interaction_labels[i] for i in range(len(interaction_labels)) if interaction_labels[i] not in interaction_ignore_types]
+
+            # we construct the pairs using gold trigger labels
+            # note that there can be None pairs
+            pair_idxs, interaction_labels = construct_pairs(y_preds=[args.triggerlabel2idx[i] for i in d[3]],
+                                                            gold_pair_idxs=d[4],
+                                                            gold_int_labels=d[5],
+                                                            gold_trigger_labels=d[3],
+                                                            args=args,
+                                                            test=test)
 
         elif args.pred_edge_with_pred:
             # in this case, first construct the pairs with predicted triggers, pairs:(T, E), (T, T)
             # returned pair_idxs and ineteraction_labels can be empty
-            pair_idxs, interaction_labels = construct_pairs(scores_trigger=scores_trigger, gold_pair_idxs=d[4], gold_int_labels=d[5], gold_trigger_labels=d[3], args=args)
+            y_preds = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
+            pair_idxs, interaction_labels = construct_pairs(y_preds=y_preds,
+                                                            gold_pair_idxs=d[4],
+                                                            gold_int_labels=d[5],
+                                                            gold_trigger_labels=d[3],
+                                                            args=args,
+                                                            test=test)
 
-        assert len(pair_idxs) == len(interaction_labels)
+        # assert len(pair_idxs) == len(interaction_labels)
         assert set(interaction_labels).intersection(set(interaction_ignore_types)) == set([]), pdb.set_trace()#print(interaction_labels)
 
         d_out.append(pair_idxs) # d[4]
 
+        # TODO: Need to think about this !!!!!!!!!!!!!!!!!!!
+        # When test, the interaction_labels will be for sure []
+        # When not test, the interaction_labels will constructed by the constructed_pairs function, but can be empty though
         interaction_labels = [args.interactionlabel2idx[i] for i in interaction_labels]
         y_trues_int.extend(interaction_labels)
 
-        interaction_labels = Variable(torch.LongTensor(np.array(interaction_labels).transpose()))
-        if args.cuda:
-            interaction_labels = interaction_labels.cuda()
+        # interaction_labels = Variable(torch.LongTensor(np.array(interaction_labels).transpose()))
+        # if args.cuda:
+        #     interaction_labels = interaction_labels.cuda()
 
-        loss_interaction = 0
+        # loss_interaction = 0
         if len(pair_idxs) > 0:
             # Only compute loss for those sentences which have interactions
             scores_interaction = model(tokens, pos_tags, pair_idxs, task='interaction')
@@ -274,8 +338,16 @@ def predict(data, model, args):
 
     return y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out
 
+def safe_division(num, den, on_err=0.0):
+    return on_err if den == 0.0 else float(num)/float(den)
 
-def evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval):
+def cal_prec_rec_f1(n_corr, n_pred, n_true):
+    prec = safe_division(n_corr, n_pred)
+    recall = safe_division(n_corr, n_true)
+    f1 = safe_division(2*prec*recall, prec+recall)
+    return prec, recall, f1
+
+def evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval, args):
     if not str2bool(final_eval):
         f1_trigger = f1_score(y_true=y_trues_trigger, y_pred=y_preds_trigger, average='micro')
         f1_int = f1_score(y_true=y_trues_int, y_pred=y_preds_int, average='micro')
@@ -285,7 +357,27 @@ def evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_e
         # for final eval, return a full report for prec, recall, f1, support
         prec_trigger, recall_trigger, f1_trigger, support_trigger = precision_recall_fscore_support(y_trues_trigger, y_preds_trigger, average=None)
         prec_int, recall_int, f1_int, support_int = precision_recall_fscore_support(y_trues_int, y_preds_int, average=None)
-        return prec_trigger, recall_trigger, f1_trigger, support_trigger, prec_int, recall_int, f1_int, support_int
+
+        n_corr_trigger = 0
+        n_true_trigger = len([i for i in y_trues_trigger if args.idx2triggerlabel[i] != 'None'])
+        n_pred_trigger = len([i for i in y_preds_trigger if args.idx2triggerlabel[i] != 'None'])
+
+        for t_true, t_pred in zip(y_trues_trigger, y_preds_trigger):
+            if t_true == t_pred and args.idx2triggerlabel[t_true] != 'None':
+                n_corr_trigger += 1
+
+        n_corr_int = 0
+        n_true_int = len([i for i in y_trues_int if args.idx2intlabel[i] != 'None'])
+        n_pred_int = len([i for i in y_preds_int if args.idx2intlabel[i] != 'None'])
+
+        for t_true, t_pred in zip(y_trues_int, y_preds_int):
+            if t_true == t_pred and args.idx2intlabel[t_true] != 'None':
+                n_corr_int += 1
+
+        avg_prec_trigger, avg_recall_trigger, avg_f1_trigger = cal_prec_rec_f1(n_corr_trigger, n_pred_trigger, n_true_trigger)
+        avg_prec_int, avg_recall_int, avg_f1_int = cal_prec_rec_f1(n_corr_int, n_pred_int, n_true_int)
+        return prec_trigger, recall_trigger, f1_trigger, support_trigger, prec_int, recall_int, f1_int, support_int, \
+                avg_prec_trigger, avg_recall_trigger, avg_f1_trigger, avg_prec_int, avg_recall_int, avg_f1_int
 
 
 def str2bool(v):
@@ -300,6 +392,7 @@ def str2bool(v):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
+    p.add_argument('--exp_id', type=str, default=2)
     p.add_argument('--hid_dim', type=int, default=60)
     p.add_argument('--n_layers', type=int, default=1)
     p.add_argument('--n_epoch', type=int, default=30)
@@ -307,19 +400,23 @@ if __name__ == '__main__':
     p.add_argument('--batch', type=int, default=1)
     p.add_argument('--trainable_emb', type=str2bool, default=False)
     p.add_argument('--cuda', type=str2bool, default=True)
-    p.add_argument('--lr', type=float, default=0.0001)
+    p.add_argument('--lr', type=float, default=0.002)   # 0.005 is a very good choice
     p.add_argument('--opt', choices=['sgd', 'adam'], default='adam')
-    p.add_argument('--random_seed', type=int, default=27)
+    p.add_argument('--random_seed', type=int, default=42)
     p.add_argument('--save_model_dir', type=str, default='./joint_models')
-    p.add_argument('--patience', type=int, default=1)
+    p.add_argument('--out_pkl_dir', type=str, default='./out_pkl')
+    p.add_argument('--patience', type=int, default=5)
     p.add_argument('--exclude_trigger', type=str2bool, default=True)
     p.add_argument('--exclude_interaction', type=str2bool, default=True)
     p.add_argument('--trigger_w', type=float, default=1.0)
     p.add_argument('--interaction_w', type=float, default=1.0)
     p.add_argument('--pred_edge_with_gold', type=str2bool, default=True, help='When predicting interactions, using gold pair idx')
-    p.add_argument('--pred_edge_with_pred', type=str2bool, default=True, help='When predicting interactions, using predicted pair idx, after some warmup epochs')
+    p.add_argument('--pred_edge_with_pred', type=str2bool, default=False, help='When predicting interactions, using predicted pair idx, after some warmup epochs')
     p.add_argument('--n_warmup_epoch', type=int, default=10, help='warmup epochs for predicting interactions with gold pair idx')
-    p.add_argument('--out_pkl', type=str, default='GE11_dev-pred')
+    # p.add_argument('--out_pkl_dev', type=str, default='GE11_dev-pred-w-gold')
+    # p.add_argument('--out_pkl_test', type=str, default='GE11_test-pred-w-gold')
+    # p.add_argument('--model_name', type=str, default='joint_model_pred-w-gold.pth')
+    p.add_argument('--task', type=str, default='GE11')
     args = p.parse_args()
 
 
@@ -328,14 +425,18 @@ if __name__ == '__main__':
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    if not os.path.exists(args.save_model_dir):
-        os.makedirs(args.save_model_dir)
+    for path in [args.save_model_dir, args.out_pkl_dir]:
+        if not os.path.exists(path):
+            os.makedirs(path)
 
-    data_train = pickle.load(open('./unmerging/GE11_train_flat_w-span.pkl', 'rb'))
-    data_dev = pickle.load(open('./unmerging/GE11_dev_flat_w-span.pkl', 'rb'))
+    print args
+
+    data_train = pickle.load(open('./unmerging/{}_train_flat_w-span.pkl'.format(args.task), 'rb'))
+    data_dev = pickle.load(open('./unmerging/{}_dev_flat_w-span.pkl'.format(args.task), 'rb'))
+    data_test = pickle.load(open('./unmerging/{}_test_flat_w-span.pkl'.format(args.task), 'rb'))
 
     # all_data: corpus_ids, corpus_tokens, corpus_pos_tags, corpus_trigger_labels, corpus_interaction_idxs, corpus_interaction_labels, corpus_spans
-    all_data = data_train + data_dev
+    all_data = data_train + data_dev + data_test
 
     all_tokens = np.concatenate([d[1] for d in all_data])
     all_tokens = list(set(all_tokens))
@@ -343,8 +444,8 @@ if __name__ == '__main__':
     word2idx = OrderedDict(zip(word_list, range(len(word_list))))
     args.word2idx = word2idx
     print "Loading w2v embeddings..."
-    w2v_emb = read_w2v_emb(word2idx, 'wikipedia-pubmed-and-PMC-w2v.bin')
-    np.save(open('w2v_emb_GE11.npy', 'wb'), w2v_emb)
+    # w2v_emb = read_w2v_emb(word2idx, 'wikipedia-pubmed-and-PMC-w2v.bin')
+    # np.save(open('w2v_emb_GE11.npy', 'wb'), w2v_emb)
     w2v_emb = np.load('w2v_emb_GE11.npy')
 
     all_pos = np.concatenate([d[2] for d in all_data])
@@ -352,10 +453,10 @@ if __name__ == '__main__':
     pos_list = ['UNK'] + all_pos
     pos2idx = OrderedDict(zip(pos_list, range(len(pos_list))))
     args.pos2idx = pos2idx
-    pos_emb= np.zeros((len(pos2idx), len(pos2idx)))
-    for i in range(pos_emb.shape[0]):
-        pos_emb[i, i] = 1.0
-    np.save(open('pos_emb.npy', 'wb'), pos_emb)
+    # pos_emb= np.zeros((len(pos2idx), len(pos2idx)))
+    # for i in range(pos_emb.shape[0]):
+    #     pos_emb[i, i] = 1.0
+    # np.save(open('pos_emb.npy', 'wb'), pos_emb)
     pos_emb = np.load('pos_emb.npy')
 
 
@@ -380,8 +481,10 @@ if __name__ == '__main__':
     # 'None' should be included.
     all_interaction_labels = np.concatenate([d[5] for d in all_data])
     all_interaction_labels = list(set(all_interaction_labels))   # there is NO None in all_interaction_labels
-    if args.pred_edge_with_pred:
-        all_interaction_labels += ['None']
+    # if args.pred_edge_with_pred:
+    # 'None' will be added anyway, because the theme and cause ints are sort-of sparse in the original annotation
+    # if no 'None', the predicted ints will generate too many false positives
+    all_interaction_labels += ['None']
     if args.exclude_interaction:
         for i in interaction_ignore_types:
             all_interaction_labels.remove(i)
@@ -426,6 +529,7 @@ if __name__ == '__main__':
     predictor = Predictor()
     # evaluator = Evaluator(predictor, args.label2idx, args.word2idx, args.pos2idx, args)
 
+
     print "Raw sentence number:{}".format(len(data_train))
     # Only use sentences which have triggers for training
     data_train = [i for i in data_train if len(set(i[3]).intersection(set(trigger_types)))!=0]
@@ -442,13 +546,17 @@ if __name__ == '__main__':
         else:
             assert args.pred_edge_with_gold == True
         train_epoch(data_train, model, optimizer, criterion, args)
-        y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args)
+        y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args, test=False)
 
         # f1_trigger, f1_int = evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval=False)
         # print "trigger f1 {}".format(f1_trigger)
         # print "interaction f1 {}".format(f1_int)
         prec_trigger, recall_trigger, f1_trigger, support_trigger, \
-        prec_int, recall_int, f1_int, support_int = evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval=True)
+        prec_int, recall_int, f1_int, support_int, \
+        avg_prec_trigger, avg_recall_trigger, avg_f1_trigger, \
+        avg_prec_int, avg_recall_int, avg_f1_int = evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval=True, args=args)
+        print 'Average trigger: prec {}, recall {}, f1 {}'.format(avg_prec_trigger, avg_recall_trigger, avg_f1_trigger)
+        print 'Average int: prec {}, recall {}, f1 {}'.format(avg_prec_int, avg_recall_int, avg_f1_int)
         for k, v in idx2triggerlabel.items():
             print "trigger {}, prec {}, recall {}, f1 {}, support {}".format(v,
                                                                              prec_trigger[k],
@@ -457,9 +565,9 @@ if __name__ == '__main__':
                                                                              support_trigger[k])
         for k, v in idx2intlabel.items():
             # if args.pred_edge_with_gold:
-                # if v == 'None':
-                    # since when pred_edge_with_gold, no None edges will be constructed
-                    # continue
+            #     if v == 'None':
+            #         since when pred_edge_with_gold, no None edges will be constructed
+            #         continue
             if k in y_trues_int:
                 # dirty hack, precision_recall_fscore_support return labels in sorted order
                 idx = sorted(list(set(y_trues_int))).index(k)
@@ -469,48 +577,58 @@ if __name__ == '__main__':
                                                                              f1_int[idx],
                                                                              support_int[idx])
 
-        torch.save({
+        if avg_f1_trigger + avg_f1_int < best_score:
+            patience += 1
+        else:
+            patience = 0
+            best_epoch = epoch
+            best_score = avg_f1_trigger + avg_f1_int
+
+            meta_name = 'EXP{}_Tf1{}_If1{}_pred-w-gold{}_pred-w-pred{}_lr{}_drp{}_ep{}_hd{}_seed{}_tw{}_iw{}'.format(args.exp_id,
+                                                                                             avg_f1_trigger,
+                                                                                             avg_f1_int,
+                                                                                             args.pred_edge_with_gold,
+                                                                                             args.pred_edge_with_pred,
+                                                                                             args.lr,
+                                                                                             args.dropout,
+                                                                                             best_epoch,
+                                                                                             args.hid_dim,
+                                                                                             args.random_seed,
+                                                                                             args.trigger_w,
+                                                                                             args.interaction_w)
+            torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                   }, '{}/joint_model_pred-w-pred.pth'.format(args.save_model_dir))
-        print 'model saved as ' + '{}/joint_model_pred-w-pred.pth'.format(args.save_model_dir)
+                   }, '{}/{}.pth'.format(args.save_model_dir, meta_name))
+            print 'model saved as ' + '{}/{}'.format(args.save_model_dir, meta_name)
 
-    with open('{}.pkl'.format(args.out_pkl), 'wb') as f:
+        if patience > args.patience:
+            print 'early stopped at epoch {}'.format(best_epoch)
+            break
+    # pdb.set_trace()
+
+    # meta_name = 'EXP1_Tf10.55825145378_If10.746090156394_pred-w-goldTrue_pred-w-predFalse_lr0.005_drp0.1_ep4_hd60_seed42'
+
+
+    checkpoint = torch.load('{}/{}.pth'.format(args.save_model_dir, meta_name))
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    model.eval()
+    args.pred_edge_with_pred = True  # This is important for testing !!!
+    args.pred_edge_with_gold = False
+    y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args, test=True)
+    with open('{}/{}_dev_{}.pkl'.format(args.out_pkl_dir, args.task, meta_name), 'wb') as f:
         pickle.dump(data_out, f)
 
 
 
-        # for i in range(len(prec_int)):
+    model.eval()
+    args.pred_edge_with_pred = True  # This is important for testing !!!
+    args.pred_edge_with_gold = False
+    y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_test, model, args, test=True)
+    with open('{}/{}_test_{}.pkl'.format(args.out_pkl_dir, args.task, meta_name), 'wb') as f:
+        pickle.dump(data_out, f)
 
-        # elif args.pred_edge_with_pred:
 
 
-
-        # args.final_eval = 1
-
-        # f1_train = evaluator.evaluate(data_train+data_dev, model, args, cuda=True )
-        # print('train micro f1: {}'.format(f1_train))
-
-        # f1_dev = evaluator.evaluate(data_train+data_dev, model, args, cuda=True )
-        # print('dev micro f1: {}'.format(f1_dev))
-        # prec, recall, f1, support = evaluator.evaluate(data_train+data_dev, model, args, cuda=True )
-        # idx2label = OrderedDict([(v, k) for k, v in args.label2idx.items()])
-        # for i in range(len(prec)):
-        #     print("Trigger type {}, prec {}, recall {}, f1 {}, support {}".format(idx2label[i], prec[i], recall[i], f1[i], support[i]))
-        # if f1_dev > best_score:
-        #     patience = 0
-        #     best_score = f1_dev
-        #     best_epoch = epoch
-        #     save_model(best_epoch, args, model, best_score, optimizer, os.path.join(args.save_model_dir, 'DevF1{}_Epoch{}.model'.format(best_score, best_epoch)))
-        #     print('Model saved as {}'.format(os.path.join(args.save_model_dir, 'DevF1{}_Epoch{}.model'.format(best_score, best_epoch))))
-        # else:
-        #     patience += 1
-        # if patience > args.patience:
-        #     print('Generating Final Eval...')
-        #     args.final_eval = 1
-        #     prec, recall, f1, support = evaluator.evaluate(data_dev, model, args, cuda=True )
-        #     idx2label = OrderedDict([(v, k) for k, v in args.label2idx.items()])
-        #     for i in range(len(prec)):
-        #         print("Trigger type {}, prec {}, recall {}, f1 {}, support {}".format(idx2label[i], prec[i], recall[i], f1[i], support[i]))
-        #     break
