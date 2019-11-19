@@ -226,12 +226,12 @@ def str2bool(v):
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--apply_heu', type=str2bool, default=True, help='apply the heuristics of taking the longest chain for unmerging')
-    p.add_argument('--out_dir', type=str, default='GE11_a2_out_dev-pred-w-gold')
+    p.add_argument('--out_dir', type=str, default='GE11_a2_out_dev')
     args = p.parse_args()
 
 
-    # with open('GE11_train_flat_w-span.pkl', 'r') as f:
-    with open('../out_pkl/GE11_dev_EXP2_Tf10.59687856871_If10.801411142143_pred-w-goldTrue_pred-w-predFalse_lr0.002_drp0.1_ep12_hd60_seed42.pkl', 'r') as f:
+    with open('GE11_dev_flat_w-span.pkl', 'r') as f:
+    # with open('../out_pkl/GE11_dev_EXP2_Tf10.59687856871_If10.801411142143_pred-w-goldTrue_pred-w-predFalse_lr0.002_drp0.1_ep12_hd60_seed42.pkl', 'r') as f:
         data = pickle.load(f)
     with open('GE11_dev_protIdBySpan.pkl', 'r') as f:
         # NOTE: the protIdBySpan is already processed by TEES
@@ -273,7 +273,7 @@ if __name__ == '__main__':
     # pdb.set_trace()
 
     print 'Finding events ...'
-    for doc_id in tqdm.tqdm(protIdBySpan.keys()): # doc_id: GE09.d1
+    for doc_id in protIdBySpan.keys(): # doc_id: GE09.d1
         doc_sents = [i for i in data if '.'.join(i[0].split('.')[:-1]) == doc_id]
         # sort the doc with sentence order
         doc_sents = sorted(doc_sents, key=lambda x: int(x[0].split('.')[-1][1:]))
@@ -316,6 +316,9 @@ if __name__ == '__main__':
                 if trigger_types[idx] in ['Protein', 'Entity', 'None']:
                     # skip triggers that are not events
                     # these include None, Protein, Entity
+                    continue
+                if len([i for i in arg_combs if i[0][0][0] == idx]) == 0:
+                    # no valid event for this trigger
                     continue
                 assert spans[idx] not in triggerIdBySpan
                 triggerIdBySpan[spans[idx]] = 'T{}'.format(trigger_id)
@@ -385,7 +388,7 @@ if __name__ == '__main__':
                 # NOTE: Need to think about it!!!!!!!!!!!
                 # mis-classified event trigger type, the predicted events might say a Gene_expression will also nests other events
                 # so this assertion is commented for now
-                # assert cur_event['trigger_type'] in REG
+                assert cur_event['trigger_type'] in REG
                 try:
                     theme_target_span = cur_event['Theme']
                 except:
@@ -429,6 +432,21 @@ if __name__ == '__main__':
                         new_events.append(new_event)
                         # the parent events have been found and added
                         remove[idx] = True
+                elif cause_target_ids:
+                    # only Cause point to a (known) child event trigger
+                    for i in range(len(cause_target_ids)):
+                        new_event = {}
+                        new_event['trigger_type'] = cur_event['trigger_type']
+                        new_event['trigger_span'] = cur_event['trigger_span']
+                        if theme_target_span:
+                            new_event['Theme'] = cur_event['Theme']
+                        new_event['Cause'] = cause_target_ids[i]
+                        new_event['ST_id'] = 'E{}'.format(event_id)
+                        eventIdsBySpan[cur_event['trigger_span']].append(new_event['ST_id'])
+                        event_id += 1
+                        new_events.append(new_event)
+                        # the parent events have been found and added
+                        remove[idx] = True
                 else:
                     # target spans are unknown, meaning the child is not known yet
                     continue
@@ -436,7 +454,20 @@ if __name__ == '__main__':
             if set(remove) == set([False]): #and len(remove) == prev_len:
                 # found the root(s), no more update
                 break
+        # print len(event_cand_stack), len([i for i in event_cand_stack if i['ST_id'] == 'X'])
+        # if len(event_cand_stack) > 0 :
+        #     pdb.set_trace()
         all_events = [event for event in events+new_events if event['ST_id'] != 'X']
+        for event in all_events:
+            if event['trigger_type'] not in REG:
+                assert 'Cause' not in event
+                for k,v in event.items():
+                    if k.startswith('Theme'):
+                        assert event[k].startswith('T') or event[k].startswith('E')
+            if (not event['Theme'].startswith('T')) and (not event['Theme'].startswith('E')):
+                assert event['trigger_type'] in REG, pdb.set_trace()
+                pdb.set_trace()
+
         # if orig_docid == '10359895':
         writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events)
 
