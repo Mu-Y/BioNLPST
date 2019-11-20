@@ -54,8 +54,8 @@ class BiLSTM(nn.Module):
         # MLP layer for interaction classificaiton
         self.linear_layer1_interaction = nn.Linear(hid_dim*4, self.hid_dim)
         self.linear_layer2_interaction = nn.Linear(self.hid_dim, interactionset_dim)
-        # self.act = F.relu
-        self.act = nn.Tanh()
+        self.act = F.relu
+        # self.act = nn.Tanh()
 
     def create_emb_layer(self, weights_matrix, trainable=False):
         num_embeddings, embedding_dim = weights_matrix.size()
@@ -101,11 +101,11 @@ class BiLSTM(nn.Module):
 
         # if self.MLP:
         if task == 'trigger':
-            d_lstm_out = self.dropout(lstm_out) # (word_seq_len, batch_size, hid_size)
-            out = self.linear_layer1_trigger(d_lstm_out.view(len(tokens), -1))
+            # lstm_out = self.dropout(lstm_out) # (word_seq_len, batch_size, hid_size)
+            out = self.linear_layer1_trigger(lstm_out.view(len(tokens), -1))
             out = self.act(out)
+            out = self.dropout(out)
             out = self.linear_layer2_trigger(out)
-            # out = self.dropout(out)
             scores = F.log_softmax(out, dim=1)
             # pdb.set_trace()
         if task == 'interaction':
@@ -126,6 +126,7 @@ class BiLSTM(nn.Module):
             # rtar_f = torch.cat([d_lstm_out[b, ridx_start[b][r], :self.hid_size].unsqueeze(0) for b,r in rel_idxs], dim=0)
             # rtar_b = torch.cat([d_lstm_out[b, ridx_end[b][r], self.hid_size:].unsqueeze(0) for b,r in rel_idxs], dim=0)
             assert out.shape[0] == len(pair_idxs)
+            # out = self.dropout(out)
             out = self.linear_layer1_interaction(out.view(len(pair_idxs), -1))
             out = self.act(out)
             out = self.dropout(out)

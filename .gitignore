@@ -3,3 +3,4 @@ reparse*
 trigger_models
 *.npy
 *.bin
+slurm*

@@ -153,7 +153,10 @@ def heu_for_unmerge(arg_combs, d):
             # pass
             max_chain_len = max([len(i) for i in cur_combs])
             # only keep longest chain like (Theme, Theme) if any
+            # if max_chain_len < 4:
             cur_combs = [i for i in cur_combs if len(i) == max_chain_len]
+            # else:
+                # cur_combs = [i for i in cur_combs if len(i) in [1, 2, 3]]
         elif trigger_label in REG:
             max_chain_len = max([len(i) for i in cur_combs])
             # only keep longest chain like (Theme, Cause) if any
@@ -162,6 +165,8 @@ def heu_for_unmerge(arg_combs, d):
     return final_combs
 
 def is_terminal(event):
+    if 'Theme' not in event:
+        return False
     targets = []
     for k, v in event.items():
         if k.startswith('Theme') or k == 'Cause':
@@ -222,6 +227,15 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def check_newevent(event):
+    if 'Cause' in event:
+        if (not event["Cause"].startswith('T')) and (not event['Cause'].startswith('E')):
+            return False
+    for k, v in event.items():
+        if k.startswith('Theme'):
+            if (not event[k].startswith('T')) and (not event[k].startswith('E')):
+                return False
+    return True
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
@@ -230,8 +244,8 @@ if __name__ == '__main__':
     args = p.parse_args()
 
 
-    with open('GE11_dev_flat_w-span.pkl', 'r') as f:
-    # with open('../out_pkl/GE11_dev_EXP2_Tf10.59687856871_If10.801411142143_pred-w-goldTrue_pred-w-predFalse_lr0.002_drp0.1_ep12_hd60_seed42.pkl', 'r') as f:
+    # with open('GE11_dev_flat_w-span.pkl', 'r') as f:
+    with open('../out_pkl_1119/GE11_dev_fortest.pkl', 'r') as f:
         data = pickle.load(f)
     with open('GE11_dev_protIdBySpan.pkl', 'r') as f:
         # NOTE: the protIdBySpan is already processed by TEES
@@ -353,6 +367,9 @@ if __name__ == '__main__':
                         else:
                             # wrong prediction, in gold the target_span should be a event trigger but the predicted target_span position
                             # is None(not picked up by model, then this target_span will not be present in triggerIdBySpan, also not in doc_prots
+                            # or the predicted target_span corresponds to a non-valid event(e.g. gene_exp with inter-sent protein theme)
+                            # print"GOT YOU"
+                            # pdb.set_trace()
                             continue
                             # pass
 
@@ -379,6 +396,8 @@ if __name__ == '__main__':
 
         event_cand_stack = [i for i in events if i['ST_id'] == 'X']
         new_events = []
+        # if len(event_cand_stack) > 0:
+        #     pdb.set_trace()
         # print event_id
         while event_cand_stack:
             remove = [False] * len(event_cand_stack)
@@ -397,6 +416,7 @@ if __name__ == '__main__':
 
                 # pdb.set_trace()
                 if cause_target_span:
+                    if cause_target_span.startswith()
                     cause_target_ids = eventIdsBySpan.get(cause_target_span, None)
                 else:
                     cause_target_ids = None
@@ -417,7 +437,9 @@ if __name__ == '__main__':
                         new_events.append(new_event)
                         # the parent events have been found and added
                         remove[idx] = True
-                elif theme_target_ids:
+                        if not check_newevent(new_event):
+                            pdb.set_trace()
+                elif theme_target_ids is not None and cause_target_ids is None:
                     # only theme point to a (known) child event trigger
                     for i in range(len(theme_target_ids)):
                         new_event = {}
@@ -432,7 +454,9 @@ if __name__ == '__main__':
                         new_events.append(new_event)
                         # the parent events have been found and added
                         remove[idx] = True
-                elif cause_target_ids:
+                        if not check_newevent(new_event):
+                            pdb.set_trace()
+                elif cause_target_ids is not None and theme_target_ids is None:
                     # only Cause point to a (known) child event trigger
                     for i in range(len(cause_target_ids)):
                         new_event = {}
@@ -447,6 +471,8 @@ if __name__ == '__main__':
                         new_events.append(new_event)
                         # the parent events have been found and added
                         remove[idx] = True
+                        if not check_newevent(new_event):
+                            pdb.set_trace()
                 else:
                     # target spans are unknown, meaning the child is not known yet
                     continue
@@ -466,10 +492,10 @@ if __name__ == '__main__':
                         assert event[k].startswith('T') or event[k].startswith('E')
             if (not event['Theme'].startswith('T')) and (not event['Theme'].startswith('E')):
                 assert event['trigger_type'] in REG, pdb.set_trace()
-                pdb.set_trace()
+                # pdb.set_trace()
 
         # if orig_docid == '10359895':
-        writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events)
+        # writeA2(orig_docid, args, triggerIdBySpan, triggerTypeBySpan, tokenBySpan, all_events)
 
 
 

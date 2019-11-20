@@ -134,7 +134,7 @@ def construct_pairs(y_preds, gold_pair_idxs, gold_int_labels, gold_trigger_label
     return res_pair_idxs, res_int_labels
 
 
-def train_epoch(data_train, model, optimizer, criterion, args):
+def train_epoch(data_train, model, optimizer, criterion_t, criterion_i, args):
 
 
     model.train()
@@ -165,7 +165,7 @@ def train_epoch(data_train, model, optimizer, criterion, args):
 
         # first predict for triggers
         scores_trigger = model(tokens, pos_tags, pair_idxs=None, task='trigger')
-        loss_trigger = criterion(scores_trigger, trigger_labels)
+        loss_trigger = criterion_t(scores_trigger, trigger_labels)
 
 
         # second predict edges, there are two cases
@@ -212,7 +212,7 @@ def train_epoch(data_train, model, optimizer, criterion, args):
         if len(pair_idxs) > 0:
             # Only compute loss for those sentences which have interactions
             scores_interaction = model(tokens, pos_tags, pair_idxs, task='interaction')
-            loss_interaction = criterion(scores_interaction, interaction_labels)
+            loss_interaction = criterion_i(scores_interaction, interaction_labels)
 
         loss = args.trigger_w * loss_trigger + args.interaction_w * loss_interaction
         loss.backward()
@@ -268,7 +268,7 @@ def predict(data, model, args, test=False):
 
         # first predict for triggers
         scores_trigger = model(tokens, pos_tags, pair_idxs=None, task='trigger')
-        loss_trigger = criterion(scores_trigger, trigger_labels)
+        # loss_trigger = criterion(scores_trigger, trigger_labels)
         y_pred_trigger = scores_trigger.max(dim=1, keepdim=False)[1].tolist()
         y_preds_trigger.extend(y_pred_trigger)
 
@@ -392,19 +392,19 @@ def str2bool(v):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
-    p.add_argument('--exp_id', type=str, default=2)
-    p.add_argument('--hid_dim', type=int, default=60)
+    p.add_argument('--exp_id', type=str, default='test')
+    p.add_argument('--hid_dim', type=int, default=70)
     p.add_argument('--n_layers', type=int, default=1)
     p.add_argument('--n_epoch', type=int, default=30)
-    p.add_argument('--dropout', type=float, default=0.1)
+    p.add_argument('--dropout', type=float, default=0.4)
     p.add_argument('--batch', type=int, default=1)
     p.add_argument('--trainable_emb', type=str2bool, default=False)
     p.add_argument('--cuda', type=str2bool, default=True)
     p.add_argument('--lr', type=float, default=0.002)   # 0.005 is a very good choice
     p.add_argument('--opt', choices=['sgd', 'adam'], default='adam')
     p.add_argument('--random_seed', type=int, default=42)
-    p.add_argument('--save_model_dir', type=str, default='./joint_models')
-    p.add_argument('--out_pkl_dir', type=str, default='./out_pkl')
+    p.add_argument('--save_model_dir', type=str, default='./joint_models_1119')
+    p.add_argument('--out_pkl_dir', type=str, default='./out_pkl_1119')
     p.add_argument('--patience', type=int, default=5)
     p.add_argument('--exclude_trigger', type=str2bool, default=True)
     p.add_argument('--exclude_interaction', type=str2bool, default=True)
@@ -412,7 +412,8 @@ if __name__ == '__main__':
     p.add_argument('--interaction_w', type=float, default=1.0)
     p.add_argument('--pred_edge_with_gold', type=str2bool, default=True, help='When predicting interactions, using gold pair idx')
     p.add_argument('--pred_edge_with_pred', type=str2bool, default=False, help='When predicting interactions, using predicted pair idx, after some warmup epochs')
-    p.add_argument('--n_warmup_epoch', type=int, default=10, help='warmup epochs for predicting interactions with gold pair idx')
+    p.add_argument('--tw_none', type=str2bool, default=False, help='weights of trigger label to deal with the highly imbalance of triggers')
+    p.add_argument('--n_warmup_epoch', type=int, default=5, help='warmup epochs for predicting interactions with gold pair idx')
     # p.add_argument('--out_pkl_dev', type=str, default='GE11_dev-pred-w-gold')
     # p.add_argument('--out_pkl_test', type=str, default='GE11_test-pred-w-gold')
     # p.add_argument('--model_name', type=str, default='joint_model_pred-w-gold.pth')
@@ -519,7 +520,16 @@ if __name__ == '__main__':
                    triggerset_dim=max(args.triggerlabel2idx.values())+1,
                    interactionset_dim=max(args.interactionlabel2idx.values())+1) # since the label2idx dict now have duplicated values, have to use max intsead of len
     model.rand_init()
-    criterion = nn.NLLLoss()
+
+
+    if args.tw_none:
+        trigger_weights = torch.Tensor([0.1, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2])
+        if args.cuda:
+            trigger_weights = trigger_weights.cuda()
+    else:
+        trigger_weights = None
+    criterion_t = nn.NLLLoss(weight=trigger_weights)
+    criterion_i = nn.NLLLoss()
     if args.cuda:
         model.cuda()
     if args.opt == 'adam':
@@ -543,9 +553,11 @@ if __name__ == '__main__':
             if epoch > args.n_warmup_epoch:
                 args.pred_edge_with_gold = False
                 args.pred_edge_with_pred = True
+                # best_score = 0
+                # best_epoch = 0
         else:
             assert args.pred_edge_with_gold == True
-        train_epoch(data_train, model, optimizer, criterion, args)
+        train_epoch(data_train, model, optimizer, criterion_t,criterion_i, args)
         y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args, test=False)
 
         # f1_trigger, f1_int = evaluate(y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, final_eval=False)
@@ -584,7 +596,7 @@ if __name__ == '__main__':
             best_epoch = epoch
             best_score = avg_f1_trigger + avg_f1_int
 
-            meta_name = 'EXP{}_Tf1{}_If1{}_pred-w-gold{}_pred-w-pred{}_lr{}_drp{}_ep{}_hd{}_seed{}_tw{}_iw{}'.format(args.exp_id,
+            meta_name = 'EXP{}_Tf1{:.4f}_If1{:.4f}_pred-w-gold{}_pred-w-pred{}_lr{}_drp{}_ep{}_hd{}_seed{}_tw{}_iw{}_trEmb{}_twNone{}'.format(args.exp_id,
                                                                                              avg_f1_trigger,
                                                                                              avg_f1_int,
                                                                                              args.pred_edge_with_gold,
@@ -595,7 +607,9 @@ if __name__ == '__main__':
                                                                                              args.hid_dim,
                                                                                              args.random_seed,
                                                                                              args.trigger_w,
-                                                                                             args.interaction_w)
+                                                                                             args.interaction_w,
+                                                                                             args.trainable_emb,
+                                                                                             args.tw_none)
             torch.save({
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
@@ -604,11 +618,11 @@ if __name__ == '__main__':
             print 'model saved as ' + '{}/{}'.format(args.save_model_dir, meta_name)
 
         if patience > args.patience:
-            print 'early stopped at epoch {}'.format(best_epoch)
+            print  '='*10 + 'early stopped at epoch {}'.format(best_epoch) + '='*10
             break
     # pdb.set_trace()
 
-    # meta_name = 'EXP1_Tf10.55825145378_If10.746090156394_pred-w-goldTrue_pred-w-predFalse_lr0.005_drp0.1_ep4_hd60_seed42'
+    # meta_name = 'EXP007_Tf10.62026295437_If10.78624813154_pred-w-goldTrue_pred-w-predFalse_lr0.002_drp0.4_ep15_hd70_seed42_tw1.0_iw0.5'
 
 
     checkpoint = torch.load('{}/{}.pth'.format(args.save_model_dir, meta_name))
@@ -618,7 +632,7 @@ if __name__ == '__main__':
     args.pred_edge_with_pred = True  # This is important for testing !!!
     args.pred_edge_with_gold = False
     y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_dev, model, args, test=True)
-    with open('{}/{}_dev_{}.pkl'.format(args.out_pkl_dir, args.task, meta_name), 'wb') as f:
+    with open('{}/{}_dev_{}.pkl'.format(args.out_pkl_dir, args.task, 'fortest'), 'wb') as f:
         pickle.dump(data_out, f)
 
 
@@ -627,7 +641,7 @@ if __name__ == '__main__':
     args.pred_edge_with_pred = True  # This is important for testing !!!
     args.pred_edge_with_gold = False
     y_trues_trigger, y_preds_trigger, y_trues_int, y_preds_int, data_out = predict(data_test, model, args, test=True)
-    with open('{}/{}_test_{}.pkl'.format(args.out_pkl_dir, args.task, meta_name), 'wb') as f:
+    with open('{}/{}_test_{}.pkl'.format(args.out_pkl_dir, args.task, 'fortest'), 'wb') as f:
         pickle.dump(data_out, f)
 
 
